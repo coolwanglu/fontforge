@@ -41,14 +41,6 @@ extern int _GScrollBar_Width;
 #endif
 #include "dlist.h"
 
-#ifndef _NO_LIBUNINAMESLIST
-#include <uninameslist.h>
-#else
-#ifndef _NO_LIBUNICODENAMES
-#include <libunicodenames.h>
-extern uninm_names_db names_db; /* Unicode character names and annotations database */
-#endif
-#endif
 
 #include "gutils/prefs.h"
 #include "collabclient.h"
@@ -214,7 +206,7 @@ static struct resed charview2_re[] = {
     { N_("Inactive Layer Color"), "BackgroundOutlineColor", rt_color, &backoutlinecol, N_("The color of outlines in inactive layers"), NULL, { 0 }, 0, 0 },
     { N_("Active Layer Color"), "ForegroundOutlineColor", rt_color, &foreoutlinecol, N_("The color of outlines in the active layer"), NULL, { 0 }, 0, 0 },
     { N_("Clip Path Color"), "ClipPathColor", rt_color, &clippathcol, N_("The color of the clip path"), NULL, { 0 }, 0, 0 },
-    { N_("Open Path Color"), "OpenPathColor", rt_color, &openpathcol, N_("The color of the an open path"), NULL, { 0 }, 0, 0 },
+    { N_("Open Path Color"), "OpenPathColor", rt_color, &openpathcol, N_("The color of the open path"), NULL, { 0 }, 0, 0 },
     { N_("Background Image Color"), "BackgroundImageColor", rt_coloralpha, &backimagecol, N_("The color used to draw bitmap (single bit) images which do not specify a clut"), NULL, { 0 }, 0, 0 },
     { N_("Fill Color"), "FillColor", rt_coloralpha, &fillcol, N_("The color used to fill the outline if that mode is active"), NULL, { 0 }, 0, 0 },
     { N_("Preview Fill Color"), "PreviewFillColor", rt_coloralpha, &previewfillcol, N_("The color used to fill the outline when in preview mode"), NULL, { 0 }, 0, 0 },
@@ -2983,6 +2975,7 @@ return( ((FontView *) (cv->b.fv))->b.map->backmap[cv->b.sc->orig_pos] );
 static char *CVMakeTitles(CharView *cv,char *buf) {
     char *title;
     SplineChar *sc = cv->b.sc;
+    char *uniname;
 
 /* GT: This is the title for a window showing an outline character */
 /* GT: It will look something like: */
@@ -2995,21 +2988,17 @@ static char *CVMakeTitles(CharView *cv,char *buf) {
     if ( sc->changed )
 	strcat(buf," *");
     title = copy(buf);
-#if _NO_LIBUNINAMESLIST && _NO_LIBUNICODENAMES
-#else
-    const char *uniname;
-#ifndef _NO_LIBUNINAMESLIST
-    if ( (uniname=uniNamesList_name(sc->unicodeenc))!=NULL ) {
-#else
-    if ( sc->unicodeenc!=-1 && (uniname=uninm_name(names_db,sc->unicodeenc))!=NULL ) {
-#endif
+
+    /* Enhance 'buf' description with Nameslist.txt unicode name definition */
+    if ( (uniname=unicode_name(sc->unicodeenc))!=NULL ) {
 	strcat(buf, " ");
 	strcpy(buf+strlen(buf), uniname);
+	free(uniname);
     }
-#endif
+
     if ( cv->show_ft_results || cv->dv )
 	sprintf(buf+strlen(buf), " (%gpt, %ddpi)", (double) cv->ft_pointsizey, cv->ft_dpi );
-return( title );
+    return( title );
 }
 
 static void SC_RefreshTitles(SplineChar *sc) {
@@ -4030,8 +4019,14 @@ return;
 	if( lastSel.lastselpt != fs.p->sp
 	    || lastSel.lastselcp != fs.p->spiro )
 	{
-	    CVPreserveState(&cv->b);
-	    selectionChanged = 1;
+	    // If we are in a collab session, we might like to preserve here
+	    // so that we can send a change of selected points to other members
+	    // of the group
+	    if( collabclient_inSession( cv ) )
+	    {
+		CVPreserveState(&cv->b);
+		selectionChanged = 1;
+	    }
 	}
 	cv->lastselpt = fs.p->sp;
 	cv->lastselcp = fs.p->spiro;
@@ -6887,12 +6882,59 @@ static void tablistcheck(GWindow gw, struct gmenuitem *mi, GEvent *UNUSED(e)) {
 
 static void CVUndo(GWindow gw, struct gmenuitem *UNUSED(mi), GEvent *UNUSED(e)) {
     CharView *cv = (CharView *) GDrawGetUserData(gw);
+
+    Undoes *undo = cv->b.layerheads[cv->b.drawmode]->undoes;
+
+//    printf("CVUndo() undo:%p u->next:%p\n", undo, ( undo ? undo->next : 0 ) );
+    if( undo )
+    {
+	/* printf("undo:\n%s\n", UndoToString( cv->b.sc, undo ) ); */
+	/* { */
+	/*     int len = 0; */
+	/*     Undoes *p = undo; */
+	/*     for( ; p; p = p->next ) */
+	/* 	len++; */
+	/*     printf("u.len:%d\n", len ); */
+	/* } */
+	/* { */
+	/*     int len = 0; */
+	/*     Undoes *p = cv->b.layerheads[cv->b.drawmode]->redoes; */
+	/*     for( ; p; p = p->next ) */
+	/* 	len++; */
+	/*     printf("r.len:%d\n", len ); */
+	/* } */
+	
+	if( collabclient_inSession( cv ) )
+	{
+	    printf("in-session!\n");
+	    collabclient_performLocalUndo( cv );
+	    cv->lastselpt = NULL;
+	    _CVCharChangedUpdate(cv,1);
+	    return;
+	}
+    }
+    
     CVDoUndo(&cv->b);
     cv->lastselpt = NULL;
 }
 
 static void CVRedo(GWindow gw, struct gmenuitem *UNUSED(mi), GEvent *UNUSED(e)) {
     CharView *cv = (CharView *) GDrawGetUserData(gw);
+
+    Undoes *undo = cv->b.layerheads[cv->b.drawmode]->redoes;
+    if( undo )
+    {
+	if( collabclient_inSession( cv ) )
+	{
+	    printf("in-session (redo)!\n");
+	    collabclient_performLocalRedo( cv );
+	    cv->lastselpt = NULL;
+	    _CVCharChangedUpdate(cv,1);
+	    return;
+	}
+    }
+    
+    
     CVDoRedo(&cv->b);
     cv->lastselpt = NULL;
 }
@@ -8054,8 +8096,10 @@ return;
 	    for ( l=0; l<cv->b.sc->layer_cnt; ++l ) if ( l!=cvlayer )
 		SCPreserveLayer(cv->b.sc,l,false);
     }
+    CVPreserveState(&cv->b);
     CVTransFunc(cv,transform,flags);
     CVCharChangedUpdate(&cv->b);
+    collabclient_sendRedo( &cv->b );
 }
 
 void CVDoTransform(CharView *cv, enum cvtools cvt ) {
@@ -10765,7 +10809,7 @@ static GMenuItem2 mblist_nomm[] = {
     GMENUITEM2_EMPTY
 };
 
-static void _CharViewCreate(CharView *cv, SplineChar *sc, FontView *fv,int enc) {
+static void _CharViewCreate(CharView *cv, SplineChar *sc, FontView *fv,int enc,int show) {
     GRect pos;
     GWindowAttrs wattrs;
     GGadgetData gd;
@@ -10933,8 +10977,11 @@ static void _CharViewCreate(CharView *cv, SplineChar *sc, FontView *fv,int enc) 
 	GDrawSetGIC(cv->v,cv->gic,0,20);
 	cv->gwgic = GDrawCreateInputContext(cv->gw,gic_root|gic_orlesser);
 	GDrawSetGIC(cv->gw,cv->gwgic,0,20);
-    GDrawSetVisible(cv->gw,true);
-
+	if( show )
+	{
+	    GDrawSetVisible(cv->gw,true);
+	}
+	
     if ( (CharView *) (sc->views)==NULL && updateflex )
 	SplineCharIsFlexible(sc,CVLayer((CharViewBase *) cv));
     if ( sc->inspiro && !hasspiro() && !sc->parent->complained_about_spiros ) {
@@ -10984,7 +11031,8 @@ void DefaultY(GRect *pos) {
 
 static void CharViewInit(void);
 
-CharView *CharViewCreate(SplineChar *sc, FontView *fv,int enc) {
+CharView *CharViewCreateExtended(SplineChar *sc, FontView *fv,int enc, int show )
+{
     CharView *cv = gcalloc(1,sizeof(CharView));
     GWindowAttrs wattrs;
     GRect pos, zoom;
@@ -11063,8 +11111,13 @@ CharView *CharViewCreate(SplineChar *sc, FontView *fv,int enc) {
     cv->former_names[0] = copy(sc->name);
     GGadgetTakesKeyboard(cv->tabs,false);
 
-    _CharViewCreate(cv,sc,fv,enc);
-return( cv );
+    _CharViewCreate( cv, sc, fv, enc, show );
+    return( cv );
+}
+
+CharView *CharViewCreate(SplineChar *sc, FontView *fv,int enc)
+{
+    return CharViewCreateExtended( sc, fv, enc, 1 );
 }
 
 void CharViewFree(CharView *cv) {
@@ -11209,11 +11262,11 @@ void SVCharViewInits(SearchView *sv) {
     wattrs.event_masks = -1;
     wattrs.cursor = ct_mypointer;
     sv->cv_rpl.gw = GWidgetCreateSubWindow(sv->gw,&pos,nested_cv_e_h,&sv->cv_rpl,&wattrs);
-    _CharViewCreate(&sv->cv_rpl, &sv->sd.sc_rpl, &sv->dummy_fv, 1);
+    _CharViewCreate(&sv->cv_rpl, &sv->sd.sc_rpl, &sv->dummy_fv, 1, 1);
 
     pos.x = 10;
     sv->cv_srch.gw = GWidgetCreateSubWindow(sv->gw,&pos,nested_cv_e_h,&sv->cv_srch,&wattrs);
-    _CharViewCreate(&sv->cv_srch, &sv->sd.sc_srch, &sv->dummy_fv, 0);
+    _CharViewCreate(&sv->cv_srch, &sv->sd.sc_srch, &sv->dummy_fv, 0, 1);
 }
 
 /* Same for the MATH Kern dlg */
@@ -11245,7 +11298,7 @@ void MKDCharViewInits(MathKernDlg *mkd) {
 	wattrs.event_masks = -1;
 	wattrs.cursor = ct_mypointer;
 	(&mkd->cv_topright)[i].gw = GWidgetCreateSubWindow(mkd->cvparent_w,&pos,nested_cv_e_h,(&mkd->cv_topright)+i,&wattrs);
-	_CharViewCreate((&mkd->cv_topright)+i, (&mkd->sc_topright)+i, &mkd->dummy_fv, i);
+	_CharViewCreate((&mkd->cv_topright)+i, (&mkd->sc_topright)+i, &mkd->dummy_fv, i, 1);
     }
 }
 
@@ -11281,7 +11334,7 @@ void TPDCharViewInits(TilePathDlg *tpd, int cid) {
 	wattrs.cursor = ct_mypointer;
 	(&tpd->cv_first)[i].gw = GWidgetCreateSubWindow(GDrawableGetWindow(GWidgetGetControl(tpd->gw,cid+i)),
 		&pos,nested_cv_e_h,(&tpd->cv_first)+i,&wattrs);
-	_CharViewCreate((&tpd->cv_first)+i, (&tpd->sc_first)+i, &tpd->dummy_fv, i);
+	_CharViewCreate((&tpd->cv_first)+i, (&tpd->sc_first)+i, &tpd->dummy_fv, i, 1 );
     }
 }
 
@@ -11312,7 +11365,7 @@ void PTDCharViewInits(TilePathDlg *tpd, int cid) {
 	wattrs.cursor = ct_mypointer;
 	tpd->cv_first.gw = GWidgetCreateSubWindow(GDrawableGetWindow(GWidgetGetControl(tpd->gw,cid)),
 		&pos,nested_cv_e_h,&tpd->cv_first,&wattrs);
-	_CharViewCreate(&tpd->cv_first, &tpd->sc_first, &tpd->dummy_fv, 0);
+	_CharViewCreate(&tpd->cv_first, &tpd->sc_first, &tpd->dummy_fv, 0, 1 );
     }
 }
 #endif		/* TilePath */
@@ -11342,7 +11395,7 @@ void GDDCharViewInits(GradientDlg *gdd, int cid) {
     gdd->cv_grad.gw = GWidgetCreateSubWindow(
 	    GDrawableGetWindow(GWidgetGetControl(gdd->gw,cid)),
 	    &pos,nested_cv_e_h,&gdd->cv_grad,&wattrs);
-    _CharViewCreate(&gdd->cv_grad, &gdd->sc_grad, &gdd->dummy_fv, 0);
+    _CharViewCreate(&gdd->cv_grad, &gdd->sc_grad, &gdd->dummy_fv, 0, 1 );
 }
 
 void StrokeCharViewInits(StrokeDlg *sd, int cid) {
@@ -11370,7 +11423,7 @@ void StrokeCharViewInits(StrokeDlg *sd, int cid) {
     sd->cv_stroke.gw = GWidgetCreateSubWindow(
 	    GDrawableGetWindow(GWidgetGetControl(sd->gw,cid)),
 	    &pos,nested_cv_e_h,&sd->cv_stroke,&wattrs);
-    _CharViewCreate(&sd->cv_stroke, &sd->sc_stroke, &sd->dummy_fv, 0);
+    _CharViewCreate(&sd->cv_stroke, &sd->sc_stroke, &sd->dummy_fv, 0, 1 );
 }
 
 static void SC_CloseAllWindows(SplineChar *sc) {

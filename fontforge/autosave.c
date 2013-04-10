@@ -35,6 +35,8 @@
 #include <dirent.h>
 #include <ustring.h>
 #include "gfile.h"
+#include "views.h"
+#include "gwidget.h"
 
 int AutoSaveFrequency=5;
 

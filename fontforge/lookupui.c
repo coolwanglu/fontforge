@@ -35,6 +35,7 @@
 #include "ttf.h"
 #include <gkeysym.h>
 #include "lookups.h"
+#include "gfile.h"
 
 int add_char_to_name_list = true;
 int default_autokern_dlg = true;
@@ -42,6 +43,8 @@ int fontlevel_undo_limit = 10;
 
 void SFUntickAllPSTandKern(SplineFont *sf);
 int kernsLength( KernPair *kp );
+
+static int DEBUG = 1;
 
 /* ************************************************************************** */
 /* ******************************* UI routines ****************************** */
@@ -236,7 +239,7 @@ GTextInfo scripts[] = {
     { (unichar_t *) N_("Script|Mandaean"), NULL, 0, 0, (void *) CHR('m','a','n','d'), NULL, 0, 0, 0, 0, 0, 0, 1, 0, 0, '\0'},
 /*  { (unichar_t *) N_("Mayan hieroglyphs"), NULL, 0, 0, (void *) CHR('m','a','y','a'), NULL, 0, 0, 0, 0, 0, 0, 1, 0, 0, '\0'},*/
     { (unichar_t *) NU_("Script|Malayālam"), NULL, 0, 0, (void *) CHR('m','l','y','m'), NULL, 0, 0, 0, 0, 0, 0, 1, 0, 0, '\0'},
-    { (unichar_t *) NU_("Script|Malayālam2"), NULL, 0, 0, (void *) CHR('m','l','y','2'), NULL, 0, 0, 0, 0, 0, 0, 1, 0, 0, '\0'},
+    { (unichar_t *) NU_("Script|Malayālam2"), NULL, 0, 0, (void *) CHR('m','l','m','2'), NULL, 0, 0, 0, 0, 0, 0, 1, 0, 0, '\0'},
     { (unichar_t *) NU_("Mathematical Alphanumeric Symbols"), NULL, 0, 0, (void *) CHR('m','a','t','h'), NULL, 0, 0, 0, 0, 0, 0, 1, 0, 0, '\0'},
     { (unichar_t *) N_("Script|Mongolian"), NULL, 0, 0, (void *) CHR('m','o','n','g'), NULL, 0, 0, 0, 0, 0, 0, 1, 0, 0, '\0'},
     { (unichar_t *) N_("Musical"), NULL, 0, 0, (void *) CHR('m','u','s','i'), NULL, 0, 0, 0, 0, 0, 0, 1, 0, 0, '\0'},
@@ -3702,6 +3705,7 @@ static void SCKernsSort( SplineChar *sc ) {
     }
 }
 
+extern char* SFDCreateUndoForLookup( SplineFont *sf, int lookup_type );
 
 /**
  * Create a fragment of SFD file which represents the state of the
@@ -3710,35 +3714,45 @@ static void SCKernsSort( SplineChar *sc ) {
  * Note that the kernpair lists may be modified by this function in
  * that those lists might be sorted on return.
  *
- * The caller needs to free the return value.
+ * The caller needs to free() the returned string value.
  */
-static char* SFDCreateUndoForLookup( SplineFont *sf, int lookup_type ) 
+char* SFDCreateUndoForLookup( SplineFont *sf, int lookup_type ) 
 {
     int gid = 0;
     SplineChar *sc = 0;
     PST *pst = 0;
     FILE* sfd = MakeTemporaryFile();
     SFD_DumpLookup( sfd, sf );
-    for ( gid=0; gid<sf->glyphcnt; ++gid ) {
-	if ( (sc = sf->glyphs[gid])!=NULL ) {
+    for ( gid=0; gid<sf->glyphcnt; ++gid )
+    {
+	if ( (sc = sf->glyphs[gid])!=NULL )
+	{
 	    int haveStartMarker = 0;
-	    if(lookup_type==gpos_pair) {
-		if( SCHasAnyKerns(sc) ) {
-		    haveStartMarker = 1;
-		    SFDDumpCharStartingMarker( sfd, sc );
+	    if(lookup_type==gpos_pair)
+	    {
+		haveStartMarker = 1;
+		SFDDumpCharStartingMarker( sfd, sc );
+
+		if( SCHasAnyKerns(sc) )
+		{
 		    SCKernsSort( sc );
 		    SFD_DumpKerns( sfd, sc, 0 );
 		}
-	    } else {
-		for ( pst = sc->possub; pst!=NULL; pst=pst->next ) {
-		    if( !haveStartMarker ) {
+	    }
+	    else
+	    {
+		for ( pst = sc->possub; pst; pst=pst->next )
+		{
+		    if( !haveStartMarker )
+		    {
 			haveStartMarker = 1;
 			SFDDumpCharStartingMarker( sfd, sc );
 		    }
 		    SFD_DumpPST( sfd, sc );
 		}
 	    }
-	    if( haveStartMarker ) {
+	    if( haveStartMarker )
+	    {
 		fprintf(sfd,"EndChar\n" );
 	    }
 	}
@@ -4032,6 +4046,9 @@ return( true );
 	if( !pstkd->sf->subfontcnt ) {
 	    sf = pstkd->sf;
 	    oldsfd = SFDCreateUndoForLookup( sf, lookup_type );
+	    
+	    if( DEBUG )	    
+		GFileWriteAll( "/tmp/old-lookup-table.sfd", oldsfd );
 	}
 	
 	/* Then mark all the current things as unused */

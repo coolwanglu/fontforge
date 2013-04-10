@@ -28,9 +28,13 @@
 include $(top_srcdir)/mk/layout.am
 
 if PYTHON_SCRIPTING
-pkgpythondata_DATA = excepthook.py
+pkgpythondata_DATA = excepthook.py test.sfd
 endif PYTHON_SCRIPTING
 
-EXTRA_DIST = excepthook.py
+EXTRA_DIST = excepthook.py test.sfd README
+
+SUBDIRS =
+SUBDIRS += simple
+SUBDIRS += collab
 
 -include $(top_srcdir)/git.mk

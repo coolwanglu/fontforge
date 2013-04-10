@@ -35,6 +35,11 @@
 #include <utype.h>
 #include <math.h>
 
+#include "collabclient.h"
+#include "gfile.h"
+extern char* SFDCreateUndoForLookup( SplineFont *sf, int lookup_type ) ;
+
+
 int mv_width = 800, mv_height = 300;
 int mvshowgrid = mv_hidegrid;
 int mv_type = mv_widthonly;
@@ -50,6 +55,23 @@ static Color rbearinglinecol = 0x000080;
 
 int pref_mv_shift_and_arrow_skip = 10;
 int pref_mv_control_shift_and_arrow_skip = 5;
+
+/**
+ * This doesn't need to be a perfect test by any means. It should
+ * return true if the currently active kerning lookup includes some
+ * class based kerning which might require GUI elements other than the
+ * currently active one to be drawn. The only price to pay by
+ * returning true all the time is a slight performance one when
+ * redrawing something that doesn't absolutely need to be redrawn.
+ */
+static int haveClassBasedKerningInView( MetricsView* mv )
+{
+    if( mv->cur_subtable )
+    {
+	return mv->cur_subtable->kc > 0;
+    }
+    return 0;
+}
 
 static SplineChar* getSelectedChar( MetricsView* mv ) {
     int i=0;
@@ -473,9 +495,13 @@ static void MVSelectSubtable(MetricsView *mv, struct lookup_subtable *sub) {
     int32 len; int i;
     GTextInfo **old = GGadgetGetList(mv->subtable_list,&len);
 
-    for ( i=0; i<len && (old[i]->userdata!=sub || old[i]->line); ++i );
+    for ( i=0; i<len && (old[i]->userdata!=sub || old[i]->line); ++i )
+    {
+	// nothing //
+    }
+//    printf("MVSelectSubtable() i:%d sub:%p\n", i, sub );
     GGadgetSelectOneListItem(mv->subtable_list,i);
-    if ( sub!=NULL )
+    if ( sub )
 	mv->cur_subtable = sub;
 }
 
@@ -954,6 +980,23 @@ static real GGadgetToReal(GGadget *g)
     return val;
 }
 
+/**
+ * If we are in a collab session then send the redo through to the
+ * server to update other clients to our state.
+ */
+static void MV_handle_collabclient_sendRedo( MetricsView *mv, SplineChar *sc )
+{
+    if( collabclient_inSessionFV( mv->fv ) )
+    {
+	collabclient_sendRedo_SC( sc );
+	
+	/* CharViewBase* cv = sc->views; */
+	/* if( !cv ) */
+	/*     cv = CharViewCreate( sc, mv->fv, -1 ); */
+	/* collabclient_sendRedo( cv ); */
+    }
+}
+
 
 static int MV_WidthChanged(GGadget *g, GEvent *e) {
 /* This routines called during "Advanced Width Metrics" viewing */
@@ -973,8 +1016,14 @@ return( true );
 	if (!isValidInt(end))
 	    GDrawBeep(NULL);
 	else if ( !mv->vertical && val!=sc->width ) {
+//	    dumpUndoChain( "before SCPreserveWidth...", sc, &sc->layers[ly_fore].undoes );
 	    SCPreserveWidth(sc);
-
+	    if( collabclient_inSessionFV( mv->fv ) )
+	    {
+		int dohints = 0;
+		SCPreserveState( sc, dohints );
+	    }
+	    
 	    // set i to the correct column that has the active width gadget
 	    for ( i=0; i<mv->glyphcnt; ++i ) {
 		if ( mv->perchar[i].width == g )
@@ -995,6 +1044,8 @@ return( true );
 
 	    SCSynchronizeWidth(sc,val,sc->width,NULL);
 	    SCCharChangedUpdate(sc,ly_none);
+	    MV_handle_collabclient_sendRedo( mv, sc );
+	    
 	} else if ( mv->vertical && val!=sc->vwidth ) {
 	    SCPreserveVWidth(sc);
 	    sc->vwidth = val;
@@ -1010,7 +1061,10 @@ return( true );
 return( true );
 }
 
-static int MV_LBearingChanged(GGadget *g, GEvent *e) {
+static int MV_LBearingChanged(GGadget *g, GEvent *e)
+{
+    printf("MV_LBearingChanged(top) ************** \n");
+    
 /* This routines called during "Advanced Width Metrics" viewing */
 /* any time "LBrearing" changed or screen is updated		*/
     MetricsView *mv = GDrawGetUserData(GGadgetGetWindow(g));
@@ -1030,11 +1084,21 @@ return( true );
 	if (!isValidInt(end))
 	    GDrawBeep(NULL);
 	else if ( !mv->vertical && val!=bb.minx ) {
+	    if( collabclient_inSessionFV( mv->fv ) )
+	    {
+		int dohints = 0;
+		SCPreserveState( sc, dohints );
+	    }
+	    
 	    real transform[6];
 	    transform[0] = transform[3] = 1.0;
 	    transform[1] = transform[2] = transform[5] = 0;
 	    transform[4] = val-bb.minx;
 	    FVTrans( (FontViewBase *)mv->fv,sc,transform,NULL,0 | fvt_alllayers );
+
+//	    dumpUndoChain( "LBearing Changed...e", sc, &sc->layers[ly_fore].undoes );
+	    MV_handle_collabclient_sendRedo( mv, sc );
+	    
 	} else if ( mv->vertical && val!=sc->parent->ascent-bb.maxy ) {
 	    real transform[6];
 	    transform[0] = transform[3] = 1.0;
@@ -1078,6 +1142,12 @@ return( true );
 	    /* Width is an integer. Adjust the lbearing so that the rbearing */
 	    /*  remains what was just typed in */
 	    if ( newwidth!=bb.maxx+val ) {
+		if( collabclient_inSessionFV( mv->fv ) )
+		{
+		    int dohints = 0;
+		    SCPreserveState( sc, dohints );
+		}
+		
 		real transform[6];
 		transform[0] = transform[3] = 1.0;
 		transform[1] = transform[2] = transform[5] = 0;
@@ -1086,6 +1156,9 @@ return( true );
 	    }
 	    SCSynchronizeWidth(sc,newwidth,sc->width,NULL);
 	    SCCharChangedUpdate(sc,ly_none);
+
+//	    dumpUndoChain( "RBearing Changed...2", sc, &sc->layers[ly_fore].undoes );
+	    MV_handle_collabclient_sendRedo( mv, sc );
 	} else if ( mv->vertical && val!=sc->vwidth-(sc->parent->ascent-bb.miny) ) {
 	    double vw = val+(sc->parent->ascent-bb.miny);
 	    SCPreserveWidth(sc);
@@ -1135,6 +1208,7 @@ static int MV_ChangeKerning(MetricsView *mv, int which, int offset, int is_diff)
     kp = mv->glyphs[which-1].kp;
     kc = mv->glyphs[which-1].kc;
     index = mv->glyphs[which-1].kc_index;
+
     if ( kc!=NULL ) {
 	if ( index==-1 )
 	    kc = NULL;
@@ -1336,6 +1410,13 @@ return( true );
 		MVDeselectChar(mv,i);
 	MVSelectChar(mv,which);
     }
+
+    if( haveClassBasedKerningInView(mv) )
+    {
+	MVRemetric(mv);
+	GDrawRequestExpose(mv->v,NULL,false);
+    }
+    
 return( true );
 }
 
@@ -3916,7 +3997,8 @@ return;
     GDrawRequestExpose(mv->v,NULL,true);
 }
 
-static void MVChar(MetricsView *mv,GEvent *event) {
+static void MVChar(MetricsView *mv,GEvent *event)
+{
     if ( event->u.chr.keysym=='s' &&
 	    (event->u.chr.state&ksm_control) &&
 	    (event->u.chr.state&ksm_meta) )
@@ -3997,6 +4079,12 @@ static void MVChar(MetricsView *mv,GEvent *event) {
 		    event->type=et_controlevent;
 		    event->u.control.subtype = et_textchanged;
 		    GGadgetDispatchEvent(active,event);
+
+		    if( haveClassBasedKerningInView(mv) )
+		    {
+			MVRemetric(mv);
+			GDrawRequestExpose(mv->v,NULL,false);
+		    }
 		}
 	    }
     }
@@ -4458,7 +4546,13 @@ return;
 	}
 	mv->pressed_x = event->u.mouse.x;
     } else if ( event->type == et_mousemove && mv->pressed ) {
-	for ( i=0; i<mv->glyphcnt && !mv->perchar[i].selected; ++i );
+//	printf("move & pressed pressedwidth:%d pressedkern:%d type!=mv_kernonly:%d\n",mv->pressedwidth,mv->pressedkern,(mv->type!=mv_kernonly));
+	
+	for ( i=0; i<mv->glyphcnt && !mv->perchar[i].selected; ++i )
+	{
+	    // nothing
+	}
+	
 	if ( mv->pressedwidth ) {
 	    int ow = mv->perchar[i].dwidth;
 	    if ( mv->right_to_left ) diff = -diff;
@@ -4509,7 +4603,11 @@ return;
 	if ( mv->showgrid==mv_hidemovinggrid )
 	    GDrawRequestExpose(mv->v,NULL,false);
     } else if ( event->type == et_mouseup && mv->pressed ) {
-	for ( i=0; i<mv->glyphcnt && !mv->perchar[i].selected; ++i );
+	for ( i=0; i<mv->glyphcnt && !mv->perchar[i].selected; ++i )
+	{
+	    // nothing
+	}
+	
 	mv->pressed = false;
 	mv->activeoff = 0;
 	sc = mv->glyphs[i].sc;
@@ -4521,6 +4619,7 @@ return;
 		SCPreserveWidth(sc);
 		SCSynchronizeWidth(sc,sc->width+diff,sc->width,NULL);
 		SCCharChangedUpdate(sc,ly_none);
+		MV_handle_collabclient_sendRedo( mv, sc );
 	    }
 	} else if ( mv->pressedkern ) {
 	    mv->pressedkern = false;
@@ -4719,6 +4818,7 @@ return( true );
 static int mv_e_h(GWindow gw, GEvent *event) {
     MetricsView *mv = (MetricsView *) GDrawGetUserData(gw);
     SplineFont *sf;
+//    printf("mv_e_h()  event->type:%d\n", event->type );
     
     switch ( event->type ) {
       case et_selclear:
@@ -5151,3 +5251,31 @@ GResInfo metricsview_ri = {
     NULL,
     NULL
 };
+
+
+void MVSelectFirstKerningTable(struct metricsview *mv)
+{
+    /* SplineFont *sf = mv->sf; */
+    /* printf("MVSelectFirstKerningTable() kerns:%p\n", sf->kerns ); */
+    /* if( sf->kerns ) */
+    /* { */
+    /* 	printf("MVSelectFirstKerningTable() kerns.next:%p\n", sf->kerns->next ); */
+    /* 	printf("MVSelectFirstKerningTable() kerns.subt:%p\n", sf->kerns->subtable ); */
+    /* } */
+
+    //
+    // if nothing selected, then select the first entry.
+    //
+    if( GGadgetGetFirstListSelectedItem(mv->features) >= 0 )
+    {
+	return;
+    }
+
+    GTextInfo **ti=NULL;
+    int32 len;
+    ti = GGadgetGetList(mv->features,&len);
+    GGadgetSelectOneListItem(mv->features,0);
+    MVRemetric(mv);
+    GDrawRequestExpose(mv->v,NULL,false);
+}
+

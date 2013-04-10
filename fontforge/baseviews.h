@@ -301,6 +301,20 @@ extern void SCCopyLookupData(SplineChar *sc);
 extern void PasteRemoveSFAnchors(SplineFont *);
 extern void PasteAnchorClassMerge(SplineFont *sf,AnchorClass *into,AnchorClass *from);
 extern void PasteRemoveAnchorClass(SplineFont *sf,AnchorClass *dying);
+
+/**
+ * Serialize and undo into a string.
+ * You must free() the returned string.
+ */
+extern char* UndoToString( SplineChar* sc, Undoes *undo );
+
+/**
+ * Dump a list of undos for a splinechar starting at the given 'undo'.
+ * msg is used as a header message so that a dump at a particular time stands
+ * out from one that occurs later in the code.
+ */
+extern void dumpUndoChain( char* msg, SplineChar* sc, Undoes *undo );
+
 extern void ClipboardClear(void);
 extern SplineSet *ClipBoardToSplineSet(void);
 extern void BCCopySelected(BDFChar *bc,int pixelsize,int depth);
@@ -649,5 +663,7 @@ extern void AutoKern2BuildClasses(SplineFont *sf,int layer,
 	int separation, int min_kern, int touching, int only_closer,
 	int autokern,
 	real good_enough);
+
+extern void MVSelectFirstKerningTable(struct metricsview *mv);
 
 #endif

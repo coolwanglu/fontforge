@@ -62,7 +62,23 @@
 #include <wchar.h>
 #endif
 
+#include "gnetwork.h"
+#ifdef BUILD_COLLAB
+#include "collab/zmq_kvmsg.h"
+#endif
+#include "collabclient.h"
+#define GTimer GTimer_GTK
+#include <glib.h>
+#include <glib-object.h>
+#undef GTimer
+
 extern int prefRevisionsToRetain;
+
+/**
+ * Use this to track if the script has joined a collab session.
+ * if not then we get to very quickly avoid the collab code path :)
+ */
+static int inPythonStartedCollabSession = 0;
 
 
 /* This defines the name of the Python entry function that is expected
@@ -859,6 +875,50 @@ return( NULL );
 
     ret = Py_BuildValue("s", StdGlyphName(buffer,uni,uniinterp,for_new_glyphs));
 return( ret );
+}
+
+static PyObject *PyFF_UnicodeAnnotationFromLib(PyObject *UNUSED(self), PyObject *args) {
+/* If the library is available, then get the official annotation for this unicode value */
+/* This function may be used in conjunction with UnicodeNameFromLib(n) */
+    PyObject *ret;
+    char *temp;
+    long val;
+
+    if ( !PyArg_ParseTuple(args,"|i",&val) )
+	return( NULL );
+
+#if _NO_LIBUNINAMESLIST && _NO_LIBUNICODENAMES
+    temp=NULL;
+#else
+    temp=unicode_annot(val);
+#endif
+    if ( temp==NULL ) {
+	temp=galloc(1*sizeof(char)); temp='\0';
+    }
+    ret=Py_BuildValue("s",temp); free(temp);
+    return( ret );
+}
+
+static PyObject *PyFF_UnicodeNameFromLib(PyObject *UNUSED(self), PyObject *args) {
+/* If the library is available, then get the official name for this unicode value */
+/* This function may be used in conjunction with UnicodeAnnotationFromLib(n) */
+    PyObject *ret;
+    char *temp;
+    long val;
+
+    if ( !PyArg_ParseTuple(args,"|i",&val) )
+	return( NULL );
+
+#if _NO_LIBUNINAMESLIST && _NO_LIBUNICODENAMES
+    temp=NULL;
+#else
+    temp=unicode_name(val);
+#endif
+    if ( temp==NULL ) {
+	temp=galloc(1*sizeof(char)); temp='\0';
+    }
+    ret=Py_BuildValue("s",temp); free(temp);
+    return( ret );
 }
 
 static PyObject *PyFF_Version(PyObject *UNUSED(self), PyObject *UNUSED(args)) {
@@ -2154,8 +2214,8 @@ static PyObject *PyFFContour_Slice( PyObject *self, Py_ssize_t start, Py_ssize_t
     int len, i;
 
     /* When passed in, start,end >= -cont->pt_cnt */
-    /* However, start,end can be arbitrarily large, particularly when the notation c[i:] 
-	is used, in which case end is a very large value (max size of uint). */ 
+    /* However, start,end can be arbitrarily large, particularly when the notation c[i:]
+	is used, in which case end is a very large value (max size of uint). */
     if ( start<0 )
 	start += cont->pt_cnt;
     if ( start>cont->pt_cnt )
@@ -2165,7 +2225,7 @@ static PyObject *PyFFContour_Slice( PyObject *self, Py_ssize_t start, Py_ssize_t
     if ( end>cont->pt_cnt )
 	end = cont->pt_cnt;
 
-    if ( end<start ) 
+    if ( end<start )
 	len = end - start + cont->pt_cnt;
     else
 	len = end - start;
@@ -2198,7 +2258,7 @@ static int PyFFContour_SliceAssign( PyObject *_self, Py_ssize_t start, Py_ssize_
 	PyErr_Format(PyExc_TypeError, "Replacement must be a (FontForge) Contour");
 return( -1 );
     }
-    
+
     if ( start<0 )
 	start += self->pt_cnt;
     if ( start>self->pt_cnt )
@@ -2207,7 +2267,7 @@ return( -1 );
 	end += self->pt_cnt;
     if ( end>self->pt_cnt )
 	end = self->pt_cnt;
-    
+
     if ( end<start ) {
 	PyErr_Format(PyExc_ValueError, "Slice specification out of order" );
 return( -1 );
@@ -3028,7 +3088,7 @@ return( NULL );
 	do_pycall(pen,"endPath",tuple);
     if ( PyErr_Occurred())
 return( NULL );
-	    
+
 Py_RETURN( self );
 }
 
@@ -4047,7 +4107,7 @@ static PyObject *PyFFLayer_ReverseDirection(PyFF_Layer *self, PyObject *UNUSED(a
     int i;
 
     for ( i=0; i<self->cntr_cnt; ++i )
-	PyFFContour_ReverseDirection(self->contours[i],NULL); 
+	PyFFContour_ReverseDirection(self->contours[i],NULL);
 Py_RETURN( self );
 }
 
@@ -4908,7 +4968,7 @@ return( NULL );
 	SplineMake(ss->last,ss->first,sc->layers[layer].order2);
     }
     ss->last = ss->first;
-	
+
     ((PyFF_GlyphPen *) self)->ended = true;
 Py_RETURN( self );
 }
@@ -4941,7 +5001,7 @@ return( NULL );
 	GlyphClear(self);
 
     memset(m,0,sizeof(m));
-    m[0] = m[3] = 1; 
+    m[0] = m[3] = 1;
     if ( !PyArg_ParseTuple(args,"s|(dddddd)",&str,
 	    &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) )
 return( NULL );
@@ -4953,7 +5013,7 @@ return( NULL );
     for ( j=0; j<6; ++j )
 	transform[j] = m[j];
     _SCAddRef(sc,rsc,layer,transform);
-    
+
 Py_RETURN( self );
 }
 
@@ -5095,6 +5155,51 @@ return( NULL );
 return( (PyObject * ) ly );
 }
 
+static CharView* pyFF_maybeCallCVPreserveState( PyFF_Glyph *self )
+{
+    if( !inPythonStartedCollabSession )
+	return;
+
+    CharView* cv = 0;
+    static GHashTable* ht = 0;
+    if( !ht )
+    {
+	ht = g_hash_table_new( g_direct_hash, g_direct_equal );
+    }
+    fprintf(stderr,"hash size:%d\n", g_hash_table_size(ht));
+
+    gpointer cache = g_hash_table_lookup( ht, self->sc );
+    if( cache )
+    {
+	return cache;
+    }
+    
+    SplineFont *sf = self->sc->parent;
+    FontViewBase* fv = FontViewFind( FontViewFind_bySplineFont, sf );
+    if( !fv )
+    {
+	fprintf(stderr,"Collab error: can not find fontview for the SplineFont of the active char\n");
+    }
+    else
+    {
+	int old_no_windowing_ui = no_windowing_ui;
+	no_windowing_ui = 0;
+
+	// FIXME: need to find the existing cv if available!
+	cv = CharViewCreate( self->sc, fv, -1 );
+	g_hash_table_insert( ht, self->sc, cv );
+        fprintf(stderr,"added... hash size:%d\n", g_hash_table_size(ht));
+	CVPreserveState( &cv->b );
+	collabclient_CVPreserveStateCalled( &cv->b );
+	    
+	no_windowing_ui = old_no_windowing_ui;
+	printf("called CVPreserveState()\n");
+    }
+
+    return cv;
+}
+	    
+
 static int PyFF_Glyph_set_a_layer(PyFF_Glyph *self,PyObject *value, void *UNUSED(closure), int layeri) {
     SplineChar *sc = self->sc;
     Layer *layer;
@@ -5118,6 +5223,9 @@ return( -1 );
 	PyErr_Format(PyExc_TypeError, "Argument must be a layer or a contour" );
 return( -1 );
     }
+
+    CharView* cv = pyFF_maybeCallCVPreserveState( self );
+    
     if ( layer->order2!=isquad ) {
 	if ( layer->order2 )
 	    newss = SplineSetsTTFApprox(ss);
@@ -5130,6 +5238,14 @@ return( -1 );
     layer->splines = ss;
 
     SCCharChangedUpdate(sc,self->layer);
+
+    if( inPythonStartedCollabSession && cv )
+    {
+	collabclient_sendRedo( &cv->b );    
+	printf("collabclient_sendRedo()...\n");
+    }
+    
+    
 return( 0 );
 }
 
@@ -6542,7 +6658,7 @@ static int PyFF_Glyph_set_dhints(PyFF_Glyph *self,PyObject *value, void *UNUSED(
     if ( cnt==-1 )
 return( -1 );
     for ( i=0; i<cnt; ++i ) {
-	if ( !PyArg_ParseTuple(PySequence_GetItem(value,i),"(dd)(dd)(dd)", 
+	if ( !PyArg_ParseTuple(PySequence_GetItem(value,i),"(dd)(dd)(dd)",
             &lx,&ly,&rx,&ry,&ux,&uy ))
 return( -1 );
         if ( ux == 0 && uy == 0 ) {
@@ -6765,7 +6881,7 @@ static int PyFF_Glyph_set_anchorPoints(PyFF_Glyph *self,PyObject *value, void *U
 	PyErr_Format(PyExc_TypeError, "Expected a tuple of anchor points" );
 return( -1 );
     }
-    
+
     for ( i=0; i<PySequence_Size(value); ++i ) {
 	ap = APFromTuple(sc,PySequence_GetItem(value,i));
 	if ( ap==NULL )
@@ -7383,7 +7499,7 @@ return( embolden_error );
 	zones->top_zone = 3*zones->top_bound/4;
 	zones->bottom_zone = zones->top_bound/4;
     }
-	
+
 return( type );
 }
 
@@ -7432,7 +7548,7 @@ static PyObject *PyFFGlyph_AddReference(PyObject *self, PyObject *args) {
     int j;
 
     memset(m,0,sizeof(m));
-    m[0] = m[3] = 1; 
+    m[0] = m[3] = 1;
     if ( !PyArg_ParseTuple(args,"s|(dddddd)",&str,
 	    &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) )
 return( NULL );
@@ -10375,7 +10491,7 @@ static PyObject *fontiter_iternextkey(fontiterobject *di) {
 		tempdict = PyDict_New();
 		PyFF_Glyph_set_temporary((PyFF_Glyph *)glyph, tempdict,  NULL);
 	    }
-	    
+
 	    matched = Py_BuildValue((char *) dictfmt,
 		    "findMatchedRefs", di->sv->matched_refs,
 		    "findMatchedContours", di->sv->matched_ss,
@@ -11924,7 +12040,7 @@ Py_RETURN_NONE;
 	    }
 	}
     }
-return( ret );    
+return( ret );
 }
 
 static PyObject *PyFF_Font_get_horizontal_baseline(PyFF_Font *self, void *closure) {
@@ -12094,7 +12210,7 @@ return( -1 );
 		PyObject *feat = PyTuple_GetItem(features,k);
 		char *tag;
 		int min,max;
-    
+
 		if ( !PyArg_ParseTuple(feat,"sii",&tag,&min,&max)) {
 		    BaseFree(base);
 return( -1 );
@@ -12402,7 +12518,7 @@ return( -1 );
     }
     OtfNameListFree(sf->fontstyle_name);
     sf->fontstyle_name = head;
-    
+
 return( 0 );
 }
 
@@ -12608,7 +12724,7 @@ return -1;
     fv->selected = gcalloc(fv->map->enccount,sizeof(char));
     if ( !no_windowing_ui )
 	FontViewReformatAll(fv->sf);
-    
+
 #if PY_MAJOR_VERSION >= 3
     Py_DECREF(bytes);
 #endif
@@ -12762,7 +12878,7 @@ return( -1 );
     sf->mark_class_cnt = cnt+1; /* +1 because index 0 was skipped */
     sf->mark_classes = classes;
     sf->mark_class_names = names;
-    
+
 return( 0 );
 }
 
@@ -13336,7 +13452,7 @@ static PyGetSetDef PyFF_Font_getset[] = {
 /* ************************************************************************** */
 /* Font Methods */
 /* ************************************************************************** */
-		    
+
 static PyObject *PyFFFont_GetTableData(PyFF_Font *self, PyObject *args) {
     char *table_name;
     uint32 tag;
@@ -13423,7 +13539,7 @@ return( NULL );
 	SFRemoveSavedTable(self->fv->sf,tag);
 Py_RETURN(self);
     }
-	
+
     if ( !PySequence_Check(tuple)) {
 	PyErr_Format(PyExc_TypeError, "Argument must be a tuple" );
 return( NULL );
@@ -13655,7 +13771,7 @@ return (NULL);
 	PyErr_Format(PyExc_EnvironmentError,"This font is not a CID keyed font." );
 return( NULL );
     }
-    
+
     SFFlatten(sf->cidmaster);
 Py_RETURN( self );
 }
@@ -13671,10 +13787,10 @@ return (NULL);
 	PyErr_Format(PyExc_EnvironmentError,"This font is not a CID keyed font." );
 return( NULL );
     }
-    
+
     if ( !PyArg_ParseTuple(args,"s", &locfilename ))
 return( NULL );
-    
+
     if ( !SFFlattenByCMap(sf,locfilename)) {
 	PyErr_Format(PyExc_EnvironmentError,"Can't find (or can't parse) cmap file: %s", locfilename);
 return( NULL );
@@ -14358,8 +14474,8 @@ return( NULL );
     if ( first!=second )
 	free(second);
 Py_RETURN( self );
-}    
-    
+}
+
 static PyObject *PyFFFont_removeLookup(PyFF_Font *self, PyObject *args) {
     SplineFont *sf;
     char *lookup;
@@ -15352,6 +15468,158 @@ return( NULL );
 return( fontiter_New( self,index,NULL) );
 }
 
+static PyObject *CollabSessionSetUpdatedCallback = NULL;
+
+static PyObject *PyFFFont_CollabSessionStart(PyFF_Font *self, PyObject *args)
+{
+#ifdef BUILD_COLLAB
+
+    int port_default = collabclient_getDefaultBasePort();
+    int port = port_default;
+    char address[IPADDRESS_STRING_LENGTH_T];
+    if( !getNetworkAddress( address ))
+    {
+	snprintf( address, IPADDRESS_STRING_LENGTH_T-1,
+		  "%s", HostPortPack( "127.0.0.1", port ));
+    }
+    else
+    {
+	snprintf( address, IPADDRESS_STRING_LENGTH_T-1,
+		  "%s", HostPortPack( address, port ));
+    }
+
+    if ( PySequence_Size(args) == 1 )
+    {
+	char* uaddr = 0;
+	if ( !PyArg_ParseTuple(args,"es","UTF-8",&uaddr) )
+	    return( NULL );
+
+	strcpy( address, uaddr );
+    }
+    FontViewBase *fv = self->fv;
+
+    
+    HostPortUnpack( address, &port, port_default );
+    
+    printf("address:%s\n", address );
+    printf("port:%d\n", port );
+	
+    void* cc = collabclient_new( address, port );
+    fv->collabClient = cc;
+    collabclient_sessionStart( cc, fv );
+    printf("connecting to server...sent the sfd for session start.\n");
+    inPythonStartedCollabSession = 1;
+
+#endif
+    Py_RETURN( self );
+}
+    
+static PyObject *PyFFFont_CollabSessionJoin(PyFF_Font *self, PyObject *args)
+{
+#ifdef BUILD_COLLAB
+
+    char* address = collabclient_makeAddressString(
+	"localhost", collabclient_getDefaultBasePort());
+    
+    if ( PySequence_Size(args) == 1 )
+    {
+	char* uaddr = 0;
+	if ( !PyArg_ParseTuple(args,"es","UTF-8",&uaddr) )
+	    return( NULL );
+
+	address = uaddr;
+    }
+    FontViewBase *fv = self->fv;
+
+    printf("PyFFFont_CollabSessionJoin() address:%s fv:%p\n", address, self->fv );
+    void* cc = collabclient_newFromPackedAddress( address );
+    printf("PyFFFont_CollabSessionJoin() address:%s cc1:%p\n", address, cc );
+    fv->collabClient = cc;
+    printf("PyFFFont_CollabSessionJoin() address:%s cc2:%p\n", address, fv->collabClient );
+    FontViewBase* newfv = collabclient_sessionJoin( cc, fv );
+    // here fv->collabClient is 0 and there is a new fontview.
+    printf("PyFFFont_CollabSessionJoin() address:%s cc3:%p\n", address, fv->collabClient );
+    printf("PyFFFont_CollabSessionJoin() address:%s cc4:%p\n", address, newfv->collabClient );
+
+    
+    
+    
+    inPythonStartedCollabSession = 1;
+    PyObject* ret = PyFV_From_FV_I( newfv );
+    Py_RETURN( ret );
+
+#endif
+
+    Py_RETURN( self );
+}
+
+static void InvokeCollabSessionSetUpdatedCallback(PyFF_Font *self)
+{
+    if( CollabSessionSetUpdatedCallback )
+    {
+	PyObject *arglist;
+	PyObject *result;
+
+	arglist = Py_BuildValue("(O)", self);
+	result = PyObject_CallObject(CollabSessionSetUpdatedCallback, arglist);
+	Py_DECREF(arglist);
+    }
+}
+
+
+static PyObject *PyFFFont_CollabSessionRunMainLoop(PyFF_Font *self, PyObject *args)
+{
+    int timeoutMS = 1000;
+    int iterationTime = 50;
+    int64_t originalSeq = collabclient_getCurrentSequenceNumber( self->fv->collabClient );
+
+    printf("PyFFFont_CollabSessionRunMainLoop() called fv:%p\n", self->fv );
+    printf("PyFFFont_CollabSessionRunMainLoop() called cc:%p\n", self->fv->collabClient );
+    for( ; timeoutMS > 0; timeoutMS -= iterationTime )
+    {
+	g_usleep( iterationTime * 1000 );
+	MacServiceReadFDs();
+    }
+
+    printf("originalSeq:%ld\n",(long int)(originalSeq));
+    printf("     newSeq:%ld\n",(long int)(collabclient_getCurrentSequenceNumber( self->fv->collabClient )));
+
+    if( originalSeq < collabclient_getCurrentSequenceNumber( self->fv->collabClient ))
+    {
+	printf("***********************\n");
+	printf("*********************** calling python updated function!!\n");
+	printf("***********************\n");
+	printf("***********************\n");
+	InvokeCollabSessionSetUpdatedCallback( self );
+    }
+    
+
+    Py_RETURN( self );
+}
+
+
+
+static PyObject *PyFFFont_CollabSessionSetUpdatedCallback(PyFF_Font *self, PyObject *args)
+{
+    PyObject *result = NULL;
+    PyObject *temp;
+
+    if (PyArg_ParseTuple(args, "O:set_callback", &temp)) {
+        if (!PyCallable_Check(temp)) {
+            PyErr_SetString(PyExc_TypeError, "parameter must be callable");
+            return NULL;
+        }
+        Py_XINCREF(temp);
+        Py_XDECREF(CollabSessionSetUpdatedCallback);
+        CollabSessionSetUpdatedCallback = temp;
+        /* Boilerplate to return "None" */
+        Py_INCREF(Py_None);
+        result = Py_None;
+    }
+    return result;
+}
+
+
 static PyObject *PyFFFont_Save(PyFF_Font *self, PyObject *args) {
     char *filename;
     char *locfilename = NULL;
@@ -15377,8 +15645,8 @@ static PyObject *PyFFFont_Save(PyFF_Font *self, PyObject *args) {
 	if ( !PyArg_ParseTuple(args,"es","UTF-8",&filename) )
 	    return( NULL );
     }
-    
-    
+
+
     if ( haveFilename )
     {
 	/* Save As - Filename was provided */
@@ -15434,9 +15702,9 @@ static PyObject *PyFFFont_Save(PyFF_Font *self, PyObject *args) {
 	    strcat(locfilename,".sfd");
 	}
 	char* targetfilename = locfilename;
-	if ( !targetfilename ) 
+	if ( !targetfilename )
 	    targetfilename = fv->sf->filename;
-	
+
 	/**
 	 * If there are no existing backup files, don't start creating them here.
 	 * Otherwise, save as many as the user wants.
@@ -15710,7 +15978,7 @@ return( NULL );
 	    PyErr_Format(PyExc_TypeError, "Unknown bitmap format");
 return( NULL );
 	}
-    }	
+    }
     if ( namelist!=NULL ) {
 	rename_to = NameListByName(namelist);
 	if ( rename_to==NULL ) {
@@ -16094,7 +16362,7 @@ return( NULL );
 	arg = PyTuple_GetItem(args,1);
 	if ( PyInt_Check(arg)) {
 	    int val = PyInt_AsLong(arg);
-	    if ( val>0 ) { 
+	    if ( val>0 ) {
 		pointsizes = gcalloc(2,sizeof(int32));
 		pointsizes[0] = val;
 	    }
@@ -16321,7 +16589,7 @@ return( NULL );
 Py_RETURN( self );
 }
 
-static char *italicize_keywords[] = { 
+static char *italicize_keywords[] = {
     "italic_angle", "ia",
     "lc_condense", "lc",
     "uc_condense", "uc",
@@ -16459,7 +16727,7 @@ return (NULL);
     if ( !Parse_ItalicArgs(&ii,args,keywds))
 return( NULL );
     MakeItalic(fv,NULL,&ii);
-    
+
 Py_RETURN( self );
 }
 
@@ -17119,6 +17387,13 @@ static PyMethodDef PyFF_Font_methods[] = {
     { "nltransform", (PyCFunction)PyFFFont_NLTransform, METH_VARARGS, "Transform a font by non-linear expessions for x and y." },
     { "validate", (PyCFunction)PyFFFont_validate, METH_VARARGS, "Check whether a font is valid and return True if it is." },
 
+    { "CollabSessionStart", (PyCFunction) PyFFFont_CollabSessionStart, METH_VARARGS, "Start a collab session at the given address (or the public IP address by default)" },
+    
+    { "CollabSessionJoin", (PyCFunction) PyFFFont_CollabSessionJoin, METH_VARARGS, "Join a collab session at the given address (or localhost by default)" },
+    { "CollabSessionRunMainLoop", (PyCFunction) PyFFFont_CollabSessionRunMainLoop, METH_VARARGS, "Run the main loop, checking for and reacting to Collab messages for the given number of milliseconds (or 1 second by default)" },
+    { "CollabSessionSetUpdatedCallback", (PyCFunction) PyFFFont_CollabSessionSetUpdatedCallback, METH_VARARGS, "Python function to call after a new collab update has been applied" },
+
+
     PYMETHODDEF_EMPTY /* Sentinel */
 };
 
@@ -17777,6 +18052,8 @@ static PyMethodDef module_fontforge_methods[] = {
     { "preloadCidmap", PyFF_PreloadCidmap, METH_VARARGS, "Load a cidmap file" },
     { "unicodeFromName", PyFF_UnicodeFromName, METH_VARARGS, "Given a name, look it up in the namelists and find what unicode code point it maps to (returns -1 if not found)" },
     { "nameFromUnicode", PyFF_NameFromUnicode, METH_VARARGS, "Given a unicode code point and (optionally) a namelist, find the corresponding glyph name" },
+    { "UnicodeNameFromLib", PyFF_UnicodeNameFromLib, METH_VARARGS, "Return the www.unicode.org name for a given unicode character value" },
+    { "UnicodeAnnotationFromLib", PyFF_UnicodeAnnotationFromLib, METH_VARARGS, "Return the www.unicode.org annotation(s) for a given unicode character value" },
     { "version", PyFF_Version, METH_NOARGS, "Returns a string containing the current version of FontForge, as 20061116" },
     { "runInitScripts", PyFF_RunInitScripts, METH_NOARGS, "Run the system and user initialization scripts, if not already run" },
     { "scriptPath", PyFF_GetScriptPath, METH_NOARGS, "Returns a list of the directories searched for scripts"},
