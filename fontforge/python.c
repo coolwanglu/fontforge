@@ -15635,7 +15635,7 @@ static PyObject *PyFFFont_CollabSessionRunMainLoop(PyFF_Font *self, PyObject *ar
     for( ; timeoutMS > 0; timeoutMS -= iterationTime )
     {
 	g_usleep( iterationTime * 1000 );
-	MacServiceReadFDs();
+	//MacServiceReadFDs();
     }
 
     printf("originalSeq:%ld\n",(long int)(originalSeq));
