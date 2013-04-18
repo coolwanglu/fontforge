@@ -2769,6 +2769,10 @@ extern int SFFindOrder(SplineFont *sf);
 extern void inituninameannot(void);
 extern char *unicode_name(int32 unienc);
 extern char *unicode_annot(int32 unienc);
+extern int32 unicode_block_start(int32 block_i);
+extern int32 unicode_block_end(int32 block_i);
+extern char *unicode_block_name(int32 block_i);
+
 
 extern const char *UnicodeRange(int unienc);
 extern SplineChar *SCBuildDummy(SplineChar *dummy,SplineFont *sf,EncMap *map,int i);
@@ -3123,7 +3127,7 @@ extern void OTLookupsCopyInto(SplineFont *into_sf,SplineFont *from_sf,
 extern struct opentype_str *ApplyTickedFeatures(SplineFont *sf,uint32 *flist, uint32 script, uint32 lang,
 	int pixelsize, SplineChar **glyphs);
 extern int VerticalKernFeature(SplineFont *sf, OTLookup *otl, int ask);
-extern void SFGlyphRenameFixup(SplineFont *sf, char *old, char *new);
+extern void SFGlyphRenameFixup(SplineFont *sf, char *old, char *new, int rename_related_glyphs);
 
 struct sllk { uint32 script; int cnt, max; OTLookup **lookups; int lcnt, lmax; uint32 *langs; };
 extern void SllkFree(struct sllk *sllk,int sllk_cnt);
