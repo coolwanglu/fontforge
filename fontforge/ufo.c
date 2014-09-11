@@ -922,7 +922,7 @@ SplineFont *SFReadUFO(char *filename, int flags) {
 return( NULL );
 }
 
-SplineSet *SplinePointListInterpretGlif(char *filename,char *memory, int memlen,
+SplineSet *SplinePointListInterpretGlif(SplineFont *sf,char *filename,char *memory, int memlen,
 	int em_size,int ascent,int is_stroked) {
 return( NULL );
 }
