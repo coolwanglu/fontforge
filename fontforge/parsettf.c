@@ -3691,6 +3691,20 @@ static void cffinfofillup(struct ttfinfo *info, struct topdicts *dict,
 	info->emsize = 1000;
     else
 	info->emsize = rint( 1/dict->fontmatrix[0] );
+	
+	/*
+	 * For some type 1 font who had an original em-size of 2048, "forcing" the em-size to 1000 can cause issues (e.g stretching of the font...)
+	 * The only way I found to detect that the original em-size was not 1000, is by using the Bounding Box.
+	 * This is a dirty hack, but it solved the problem for my case, and it did not seem to trigger any problem with other fonts for now.
+	 */
+	if (info->emsize <= 1000){
+		if (dict->fontbb){
+			if (dict->fontbb[3] - dict->fontbb[1] >= 2048){
+				info->emsize = rint(dict->fontbb[3] - dict->fontbb[1]) - ((int)rint(dict->fontbb[3] - dict->fontbb[1])) % 2048;
+			}
+		}
+	}
+	
 #if 1
     info->ascent = .8*info->emsize;
 #else
